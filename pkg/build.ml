@@ -23,6 +23,7 @@ let () =
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_enum";
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_iter";
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_map";
+    Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_map2";
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_fold";
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_create";
     Pkg.lib ~exts:Exts.library "src_plugins/ppx_deriving_make";

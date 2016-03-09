@@ -36,8 +36,19 @@ module Pervasives = Pervasives
 module Char = Char
 module String = String
 module Printexc = Printexc
-module Array = Array
-module List = List
+module Array = struct
+  include Array
+  let rec map2p f (a,b) = 
+    if Array.length a <> Array.length b then raise (Invalid_argument "Array.map2p")
+    else Array.init (Array.length a) (fun i -> f (a.(i),b.(i)))
+end
+module List = struct
+  include List
+  let rec map2p f = function
+    | [],[] -> []
+    | (a::b),(c::d) -> f (a,c) :: map2p f (b,d)
+    | _ -> raise (Invalid_argument "List.map2p")
+end
 module Nativeint = Nativeint
 module Int32 = Int32
 module Int64 = Int64

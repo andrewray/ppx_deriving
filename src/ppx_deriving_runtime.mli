@@ -68,8 +68,14 @@ module Printexc : (module type of Printexc with
   type raw_backtrace := Printexc.raw_backtrace and
   type backtrace_slot := Printexc.backtrace_slot and
   type location := Printexc.location)
-module Array : (module type of Array)
-module List : (module type of List)
+module Array : sig
+  include module type of Array
+  val map2p : ('a * 'b -> 'c) -> 'a array * 'b array -> 'c array
+end
+module List : sig
+  include module type of List
+  val map2p : ('a * 'b -> 'c) -> 'a list * 'b list -> 'c list
+end
 module Nativeint : (module type of Nativeint)
 module Int32 : (module type of Int32)
 module Int64 : (module type of Int64)
