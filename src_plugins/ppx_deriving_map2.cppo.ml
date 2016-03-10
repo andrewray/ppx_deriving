@@ -36,28 +36,30 @@ let  constrrec name fields =  constr name [ record                fields]
 let rec expr_of_typ typ =
   match typ with
   | _ when Ppx_deriving.free_vars_in_core_type typ = [] -> 
-    [%expr fun (x, _) -> x]
+    [%expr fun x _ -> x]
   | { ptyp_desc = Ptyp_constr _ } ->
     let builtin = not (attr_nobuiltin typ.ptyp_attributes) in
     begin match builtin, typ with
     | true, [%type: [%t? typ] list] ->
-      [%expr Ppx_deriving_runtime.List.map2p [%e expr_of_typ typ]]
+      [%expr Ppx_deriving_runtime.List.map2 [%e expr_of_typ typ]]
     | true, [%type: [%t? typ] array] ->
-      [%expr Ppx_deriving_runtime.Array.map2p [%e expr_of_typ typ]]
+      [%expr Ppx_deriving_runtime.Array.map2 [%e expr_of_typ typ]]
     | true, [%type: [%t? typ] option] ->
-      [%expr function None,None -> None  
-                    | Some x, Some y -> Some ([%e expr_of_typ typ] (x,y))
-                    | _, _ -> raise (Invalid_argument "option")]
+      [%expr fun x y -> 
+        match x,y with
+        | None,None -> None  
+        | Some x, Some y -> Some ([%e expr_of_typ typ] x y)
+        | _, _ -> raise (Invalid_argument "option")]
     | _, { ptyp_desc = Ptyp_constr ({ txt = lid }, args) } ->
       app (Exp.ident (mknoloc (Ppx_deriving.mangle_lid (`Prefix deriver) lid)))
           (List.map expr_of_typ args)
     | _ -> assert false
     end
   | { ptyp_desc = Ptyp_tuple typs } ->
-    [%expr fun ([%p ptuple (List.mapi (fun i _ -> pvar (argn i)) typs)], 
-                [%p ptuple (List.mapi (fun i _ -> pvar (argm i)) typs)]) ->
+    [%expr fun [%p ptuple (List.mapi (fun i _ -> pvar (argn i)) typs)] 
+               [%p ptuple (List.mapi (fun i _ -> pvar (argm i)) typs)] ->
       [%e tuple (List.mapi (fun i typ -> app (expr_of_typ typ) 
-                                             [tuple [evar (argn i); evar (argm i)]]) typs)]];
+                                             [evar (argn i); evar (argm i)]) typs)]];
   | { ptyp_desc = Ptyp_variant (fields, _, _); ptyp_loc } ->
     let cases =
       fields |> List.map (fun field ->
@@ -106,7 +108,7 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
           match pcd_args with
           | Pcstr_tuple(typs) ->
             let args = List.mapi 
-              (fun i typ -> app (expr_of_typ typ) [tuple [evar (argn i); evar (argm i)]]) typs 
+              (fun i typ -> app (expr_of_typ typ) [evar (argn i); evar (argm i)]) typs 
             in
             Exp.case 
               [%pat? ([%p (pconstr name' (pattn typs))],
@@ -115,7 +117,7 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
 #if OCAML_VERSION >= (4, 03, 0)
           | Pcstr_record(labels) ->
             let args = labels |> List.map (fun { pld_name = { txt = n }; pld_type = typ } ->
-              n, [%expr [%e expr_of_typ typ] [%e tuple [evar (argl n); evar (argk n)]]]) in
+              n, [%expr [%e expr_of_typ typ] [%e evar (argl n)] [%e evar (argk n)]]) in
             Exp.case 
               [%pat? ([%p (pconstrrec name' (pattl labels))],
                        [%p (pconstrrec name' (pattk labels))])]
@@ -127,15 +129,16 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
         if List.length constrs <= 1 then [] 
         else [Exp.case [%pat? (_, _)] [%expr raise (Invalid_argument "variant")]] 
       in
-      Exp.function_ (cases @ cany)
+      (*Exp.function_ (cases @ cany)*)
+      [%expr fun x y -> [%e Exp.match_ [%expr (x,y)] (cases@cany)]]
     | Ptype_record labels, _ ->
       let fields =
         labels |> List.mapi (fun i { pld_name = { txt = name }; pld_type } ->
           name, [%expr [%e expr_of_typ pld_type]
-                       ([%e Exp.field (evar "x") (mknoloc (Lident name))],
-                        [%e Exp.field (evar "y") (mknoloc (Lident name))])])
+                       [%e Exp.field (evar "x") (mknoloc (Lident name))]
+                       [%e Exp.field (evar "y") (mknoloc (Lident name))]])
       in
-      [%expr fun (x,y) -> [%e record fields]]
+      [%expr fun x y -> [%e record fields]]
     | Ptype_abstract, None ->
       raise_errorf ~loc "%s cannot be derived for fully abstract types" deriver
     | Ptype_open, _        ->
@@ -147,38 +150,23 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
 
 let sig_of_type ~options ~path type_decl =
   parse_options options;
-  (* 0: t * t -> t 
-   * 1: ('a * 'b -> 'c) -> 'a t -> 'b t -> 'c t 
-   * 2: ('a * 'c -> 'e) -> ('b * 'd -> 'f) -> ('a, 'b) t * ('c, 'd) -> ('e, 'f) t *)
-  let typ = Ppx_deriving.core_type_of_type_decl type_decl in
-  let free = Ppx_deriving.free_vars_in_core_type typ in
-  let gen_vars used = 
-    let fresh_var (vars,used) _ = 
-      let var = Ppx_deriving.fresh_var used in
-      (Typ.var var)::vars, var::used
-    in
-    let vars, used = List.fold_left fresh_var ([],used) free in
-    Array.of_list @@ List.rev vars, used
-  in
-  let arg1, used = gen_vars [] in
-  let arg2, used = gen_vars used in
-  let result, _ = gen_vars used in
 
-  let poly_fns = Array.init (List.length free) 
-    (fun i -> [%type: [%t arg1.(i)] * [%t arg2.(i)] -> [%t result.(i)]]) in
+  (* generate types for the argument and result with distinct fresh vars *)
+  let typ_arg0, var_arg0, bound = Ppx_deriving.core_type_with_fresh_vars []    type_decl in
+  let typ_arg1, var_arg1, bound = Ppx_deriving.core_type_with_fresh_vars bound type_decl in
+  let typ_ret , var_ret , _     = Ppx_deriving.core_type_with_fresh_vars bound type_decl in
 
-  let new_typ vars = 
-    Ppx_deriving.core_type_of_type_decl 
-      { type_decl with 
-        ptype_params = 
-          List.map2 (fun (_,variance) var -> (var,variance))
-            type_decl.ptype_params
-            (Array.to_list vars) } 
-  in
+  (* build the polymorphic conversion functions *)
+  let rec map3 f a b c = match a,b,c with [],[],[] -> [] 
+                                        | a::x,b::y,c::z -> f a b c :: map3 f x y z 
+                                        | _ -> raise (Invalid_argument "map3") in
+  let poly_fns = map3
+    (fun a b r -> [%type: [%t a] -> [%t b] -> [%t r]]) var_arg0 var_arg1 var_ret in
 
-  let typ = 
-    Array.fold_right (fun t acc -> [%type: [%t t] -> [%t acc]]) 
-      poly_fns [%type: [%t new_typ arg1] * [%t new_typ arg2] -> [%t new_typ result]] 
+  (* overall type *)
+  let typ = List.fold_right 
+    (fun f t -> [%type: [%t f] -> [%t t]]) 
+    poly_fns [%type: [%t typ_arg0] -> [%t typ_arg1] -> [%t typ_ret]] 
   in
 
   [Sig.value (Val.mk (mknoloc (Ppx_deriving.mangle_type_decl (`Prefix deriver) type_decl)) typ)]
