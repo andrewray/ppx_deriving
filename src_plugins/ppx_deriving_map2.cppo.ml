@@ -147,12 +147,42 @@ let str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
 
 let sig_of_type ~options ~path type_decl =
   parse_options options;
+  (* 0: t * t -> t 
+   * 1: ('a * 'b -> 'c) -> 'a t -> 'b t -> 'c t 
+   * 2: ('a * 'c -> 'e) -> ('b * 'd -> 'f) -> ('a, 'b) t * ('c, 'd) -> ('e, 'f) t *)
   let typ = Ppx_deriving.core_type_of_type_decl type_decl in
-  let polymorphize = Ppx_deriving.poly_arrow_of_type_decl
-                        (fun var -> [%type: [%t var] -> [%t var]]) type_decl in
-  [Sig.value (Val.mk (mknoloc (Ppx_deriving.mangle_type_decl (`Prefix deriver) type_decl))
-              (polymorphize [%type: [%t typ] -> [%t typ]]))]
+  let free = Ppx_deriving.free_vars_in_core_type typ in
+  let gen_vars used = 
+    let fresh_var (vars,used) _ = 
+      let var = Ppx_deriving.fresh_var used in
+      (Typ.var var)::vars, var::used
+    in
+    let vars, used = List.fold_left fresh_var ([],used) free in
+    Array.of_list @@ List.rev vars, used
+  in
+  let arg1, used = gen_vars [] in
+  let arg2, used = gen_vars used in
+  let result, _ = gen_vars used in
 
+  let poly_fns = Array.init (List.length free) 
+    (fun i -> [%type: [%t arg1.(i)] * [%t arg2.(i)] -> [%t result.(i)]]) in
+
+  let new_typ vars = 
+    Ppx_deriving.core_type_of_type_decl 
+      { type_decl with 
+        ptype_params = 
+          List.map2 (fun (_,variance) var -> (var,variance))
+            type_decl.ptype_params
+            (Array.to_list vars) } 
+  in
+
+  let typ = 
+    Array.fold_right (fun t acc -> [%type: [%t t] -> [%t acc]]) 
+      poly_fns [%type: [%t new_typ arg1] * [%t new_typ arg2] -> [%t new_typ result]] 
+  in
+
+  [Sig.value (Val.mk (mknoloc (Ppx_deriving.mangle_type_decl (`Prefix deriver) type_decl)) typ)]
+    
 let () =
   Ppx_deriving.(register (create deriver
     ~core_type: expr_of_typ
